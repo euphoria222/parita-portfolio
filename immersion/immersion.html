@@ -1,4 +1,4 @@
-<!-- Immersion layer: per-room atmosphere + ambient sound. Additive; reads the .stage.look-* class the app already renders. -->
+<!-- Immersion layer: per-room atmosphere. Additive; reads the .stage.look-* class the app already renders. -->
 <style id="amb-style">
 /* Only transform and opacity animate, so every effect stays on the compositor. */
 .amb-layer { position: absolute; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; contain: strict; opacity: 0; animation: amb-in 1.1s ease .3s forwards; }
@@ -41,27 +41,10 @@
 .s-glyph { font-family: var(--display, sans-serif); line-height: 1; }
 .s-streak { width: 1.5px; border-radius: 2px; }
 
-/* Room sound control: same pill language as the rest of the site */
-.amb-chip { position: fixed; z-index: 8; top: 0; left: 0; width: 44px; height: 44px; padding: 0; border-radius: 999px; border: 2px solid var(--line, #3A2440); background: var(--milk, #FFF8F1); color: var(--ink, #3A2440); box-shadow: 0 3px 0 var(--line, #3A2440); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: opacity .25s; -webkit-tap-highlight-color: transparent; }
-.amb-chip.dark { background: rgba(255, 255, 255, .1); color: #FFF3EA; border-color: rgba(255, 243, 234, .55); box-shadow: none; }
-.amb-chip svg { width: 20px; height: 20px; }
-.amb-chip .amb-wave, .amb-chip .amb-x { transition: opacity .2s; }
-.amb-chip[aria-pressed="false"] .amb-wave { opacity: 0; }
-.amb-chip[aria-pressed="true"] .amb-x { opacity: 0; }
-.amb-toast { position: fixed; z-index: 8; top: 0; left: 0; padding: 6px 12px; border-radius: 999px; background: var(--ink, #3A2440); color: #FFF8F1; font: 600 13px/1.2 var(--body, system-ui, sans-serif); white-space: nowrap; opacity: 0; transition: opacity .3s; pointer-events: none; }
-.amb-toast.on { opacity: 1; }
-.amb-credit { margin: 14px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-soft, #6A4E70); }
-.amb-credit a { color: inherit; }
 @media (prefers-reduced-motion: reduce) { .amb-layer i { animation: none !important; } }
 </style>
 <script id="amb-script">
 (() => {
-  const SND = {
-    hello: ['windchime', .45], screening: ['projector', .55], desktop: ['keys', .32], onair: ['applause', .18],
-    podium: ['applause', .4], chalk: ['chalk', .4], cork: ['keys', .22], neon: ['rain', .6], forest: ['forest', .95],
-    lattice: ['chimes', .35], forge: ['keys', .3], festival: ['cafe', .4], menu: ['cafe', .55], stars: ['chimes', .5], letter: ['forest', .4]
-  };
-  const DARK = /look-(screening|onair|chalk|neon|forest|lattice|festival|stars)\b/;
   const mm = q => { try { return matchMedia(q).matches; } catch (e) { return false; } };
   const LITE = mm('(max-width: 700px), (pointer: coarse)');
   const STILL = mm('(prefers-reduced-motion: reduce)');
@@ -211,143 +194,26 @@
     st.prepend(L);
   }
 
-  /* ---------- sound ---------- */
-  let ctx = null, master = null, duck = null, cur = null, curKey = null, token = 0;
-  let muted = false; try { muted = localStorage.getItem('amb-muted') === '1'; } catch (e) {}
-  const bufs = new Map();
-  function ensureCtx() {
-    if (ctx) return ctx;
-    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
-    ctx = new AC();
-    master = ctx.createGain(); master.gain.value = muted ? 0 : 1;
-    duck = ctx.createGain(); duck.gain.value = 1;
-    duck.connect(master); master.connect(ctx.destination);
-    return ctx;
-  }
-  function ramp(g, v, t) { const n = ctx.currentTime; g.cancelScheduledValues(n); g.setValueAtTime(g.value, n); g.linearRampToValueAtTime(v, n + t); }
-  function getBuf(key) {
-    if (bufs.has(key)) { const p = bufs.get(key); bufs.delete(key); bufs.set(key, p); return p; }
-    const p = fetch(`assets/ambient/${key}.mp3`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
-      .then(a => new Promise((res, rej) => ctx.decodeAudioData(a, res, rej)));
-    p.catch(() => bufs.delete(key));
-    bufs.set(key, p);
-    while (bufs.size > 3) bufs.delete(bufs.keys().next().value); // keep memory small on phones
-    return p;
-  }
-  // Skip codec padding at either end so the loop wraps without a click.
-  function edges(b) {
-    const d = b.getChannelData(0), m = Math.min(6000, d.length >> 2);
-    let s = 0, e = d.length - 1;
-    while (s < m && Math.abs(d[s]) < 1e-4) s++;
-    while (e > d.length - m && Math.abs(d[e]) < 1e-4) e--;
-    return [s / b.sampleRate, (e + 1) / b.sampleRate];
-  }
-  function stopCur(t) {
-    if (!cur) return; const c = cur; cur = null;
-    try { ramp(c.g.gain, 0, t); c.s.stop(ctx.currentTime + t + .05); } catch (e) {}
-  }
-  async function setRoom(look) {
-    const def = look && SND[look];
-    const key = def ? def[0] : null;
-    if (key && key === curKey && cur) { ramp(cur.g.gain, def[1], .8); return; }
-    const my = ++token;
-    if (ctx) stopCur(.9);
-    curKey = key;
-    if (!key || muted || !ctx || ctx.state !== 'running') return;
-    let b; try { b = await getBuf(key); } catch (e) { return; }
-    if (my !== token || !ctx) return;
-    const s = ctx.createBufferSource(), g = ctx.createGain();
-    s.buffer = b; s.loop = true; const [a, z] = edges(b); s.loopStart = a; s.loopEnd = z;
-    g.gain.value = 0; s.connect(g); g.connect(duck);
-    s.start(0, a); ramp(g.gain, def[1], 1.6);
-    cur = { s, g };
-  }
-  // Duck the room sound whenever a video or the song plays with sound.
-  const media = new Set();
-  const loud = () => { for (const m of media) if (!m.paused && !m.muted && m.volume > 0) return true; return false; };
-  const duckCheck = () => { if (ctx && duck) ramp(duck.gain, loud() ? .08 : 1, .5); };
-  function track(m) { if (!m || m.__amb) return; m.__amb = 1; media.add(m); ['play', 'pause', 'ended', 'volumechange', 'emptied'].forEach(e => m.addEventListener(e, duckCheck)); }
-  const play0 = HTMLMediaElement.prototype.play;
-  HTMLMediaElement.prototype.play = function () { track(this); const p = play0.apply(this, arguments); duckCheck(); return p; };
-  document.addEventListener('play', e => { track(e.target); duckCheck(); }, true);
-
-  // Audio may only start inside a user gesture; unlock on the first tap/click/key.
-  function unlock() {
-    if (!ensureCtx()) return;
-    if (ctx.state !== 'running') ctx.resume().then(() => { if (curLook && !cur) { curKey = null; setRoom(curLook); } }).catch(() => {});
-    try { const b = ctx.createBuffer(1, 1, 22050), s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(0); } catch (e) {}
-    if (ctx.state === 'running') ['pointerdown', 'touchend', 'keydown'].forEach(t => document.removeEventListener(t, unlock, true));
-  }
-  ['pointerdown', 'touchend', 'keydown'].forEach(t => document.addEventListener(t, unlock, { capture: true, passive: true }));
-  document.addEventListener('visibilitychange', () => { if (!ctx) return; if (document.hidden) ctx.suspend().catch(() => {}); else if (curLook) ctx.resume().catch(() => {}); });
-
-  /* ---------- control ---------- */
-  const chip = el('button', 'amb-chip'); chip.type = 'button'; chip.id = 'amb-toggle'; chip.hidden = true;
-  chip.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><g class="amb-wave"><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></g><g class="amb-x"><path d="M17 9l5 6"/><path d="M22 9l-5 6"/></g></svg>';
-  const toast = el('div', 'amb-toast'); toast.setAttribute('role', 'status');
-  function paintChip() { chip.setAttribute('aria-pressed', String(!muted)); chip.setAttribute('aria-label', muted ? 'Turn room sound on' : 'Mute room sound'); }
-  chip.addEventListener('click', () => {
-    muted = !muted; try { localStorage.setItem('amb-muted', muted ? '1' : '0'); } catch (e) {}
-    paintChip(); unlock();
-    if (ctx) { ramp(master.gain, muted ? 0 : 1, .4); if (muted) { stopCur(.4); curKey = null; } else if (!cur && curLook) { curKey = null; setRoom(curLook); } }
-    say(muted ? 'Room sound off' : 'Room sound on');
-  });
-  let toastT = 0, told = false;
-  function say(t) { toast.textContent = t; place(); toast.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toast.classList.remove('on'), 2200); }
-  function place() {
-    const st = document.querySelector('.stage.open'); if (!st) return;
-    const bar = st.querySelector('.stage-bar'), map = bar && [...bar.querySelectorAll('button,a')].pop(), cnt = bar && bar.querySelector('.stage-count');
-    const pr = st.querySelector('.progress');
-    let x, y;
-    if (map && cnt) {
-      const m = map.getBoundingClientRect(), c = cnt.getBoundingClientRect();
-      x = m.left - 8 - 44; y = m.top + (m.height - 44) / 2;
-      if (x < c.right + 8) { x = m.right - 44; y = (pr ? pr.getBoundingClientRect().bottom : m.bottom) + 10; }
-    } else { x = innerWidth - 60; y = 70; }
-    chip.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
-    const tw = toast.offsetWidth || 120;
-    toast.style.left = Math.max(12, Math.min(innerWidth - tw - 12, x + 44 - tw)) + 'px';
-    toast.style.top = (y + 52) + 'px';
-  }
-  function updateChip(st, look) {
-    const show = !!(st && SND[look]);
-    chip.hidden = !show;
-    if (!show) return;
-    chip.classList.toggle('dark', DARK.test(st.className));
-    paintChip(); place();
-    if (!told) { told = true; setTimeout(() => say(muted ? 'Room sound is off · tap to turn on' : 'Room sound on · tap to mute'), 900); }
-  }
-
-  /* ---------- credits (CC BY needs attribution) ---------- */
-  const CREDIT = 'Room sounds via Wikimedia Commons, trimmed into loops: forest by <a href="https://commons.wikimedia.org/wiki/File:Forest_ambience_(Gravity_Sound).wav" target="_blank" rel="noopener">Gravity Sound</a> and projector by <a href="https://commons.wikimedia.org/wiki/File:WWS_Projectorrunningwiththelighton.ogg" target="_blank" rel="noopener">Work With Sounds / La Fonderie</a> (both <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>); applause, keyboard, café, rain and wind chime are public domain; chalk and chimes are CC0.';
-  function credits() {
-    const box = document.querySelector('.guide-box');
-    if (box && !box.querySelector('.amb-credit')) { const p = el('p', 'amb-credit'); p.innerHTML = CREDIT; box.appendChild(p); }
-  }
-
   /* ---------- watch the app ---------- */
   let curLook = null, q = 0, sweepT = 0;
   function sync() {
     q = 0;
     const st = document.querySelector('.stage.open');
     const look = st ? ((st.className.match(/look-([a-z]+)/) || [])[1] || null) : null;
-    // rooms with their own 3D world (forest, curiosities) also bring their own sound, so this layer stays out of them entirely
+    // rooms with their own 3D world (forest, curiosities) bring their own visuals and sound, so this layer stays out of them
     const own = !!(st && st.classList.contains('has-world'));
     if (st && look) { if (own) st.querySelector(':scope > .amb-layer')?.remove(); else ensureLayer(st, look); }
     const room = own ? null : look;
     if (room !== curLook) {
-      curLook = room; setRoom(room); updateChip(st, room);
+      curLook = room;
       clearTimeout(sweepT);
       // remove layers from closed rooms once their closing animation is done, so nothing animates off-screen
       sweepT = setTimeout(() => document.querySelectorAll('.amb-layer').forEach(l => { if (!l.parentElement || !l.parentElement.classList.contains('open')) l.remove(); }), 900);
     }
-    credits();
   }
   function boot() {
-    document.body.appendChild(chip); document.body.appendChild(toast);
     const root = document.getElementById('root') || document.body;
     new MutationObserver(() => { if (!q) q = requestAnimationFrame(sync); }).observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
-    addEventListener('resize', () => { if (!chip.hidden) place(); }, { passive: true });
     sync();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
