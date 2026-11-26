@@ -4026,9 +4026,12 @@ three/build/three.module.js:
     q = 0;
     const st = document.querySelector('.stage.open');
     const look = st ? ((st.className.match(/look-([a-z]+)/) || [])[1] || null) : null;
-    if (st && look) ensureLayer(st, look);
-    if (look !== curLook) {
-      curLook = look; setRoom(look); updateChip(st, look);
+    // rooms with their own 3D world (forest, curiosities) also bring their own sound, so this layer stays out of them entirely
+    const own = !!(st && st.classList.contains('has-world'));
+    if (st && look) { if (own) st.querySelector(':scope > .amb-layer')?.remove(); else ensureLayer(st, look); }
+    const room = own ? null : look;
+    if (room !== curLook) {
+      curLook = room; setRoom(room); updateChip(st, room);
       clearTimeout(sweepT);
       // remove layers from closed rooms once their closing animation is done, so nothing animates off-screen
       sweepT = setTimeout(() => document.querySelectorAll('.amb-layer').forEach(l => { if (!l.parentElement || !l.parentElement.classList.contains('open')) l.remove(); }), 900);
